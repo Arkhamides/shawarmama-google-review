@@ -1,6 +1,6 @@
 # Google My Business Reviews Manager
 
-A Python application for managing Google My Business reviews with **real-time polling**, **bad review detection**, and **draft response generation**. Fetches reviews across all restaurant locations, automatically detects bad reviews (≤3 stars), generates draft responses, and saves them for owner approval via a Flask web interface. Future phases will add Telegram bot notifications and AI-powered response generation.
+A Python application for managing Google My Business reviews with **real-time polling**, **bad review detection**, **draft response generation**, and **Telegram notifications**. Fetches reviews across all restaurant locations, automatically detects bad reviews (≤3 stars), generates draft responses, sends instant Telegram notifications, and awaits owner approval. Future phases will add AI-powered response generation.
 
 ## Quick Start
 
@@ -22,15 +22,16 @@ python run.py
 - Cache credentials locally for future runs
 - Fetch all verified business locations
 - Initialize SQLite database (`db/reviews.db`)
-- Start background polling loop (every 5 minutes by default)
-- Start Flask web server on port 8080
+- Start Telegram bot (long-polling mode)
+- Start background review polling loop (every 5 minutes by default)
+- Start FastAPI web server on port 8080
 
 The application runs continuously in the background:
 - 🔄 **Polls for new reviews** every 5 minutes (configurable)
 - 🚨 **Detects bad reviews** (≤3 stars, configurable)
 - 📝 **Generates draft responses** automatically
-- 💾 **Saves drafts** to database for owner approval
-- (Phase 4+) **Sends Telegram notifications** when bad reviews detected
+- 📲 **Sends Telegram notifications** with inline [✅ Post] and [❌ Reject] buttons
+- 💾 **Saves drafts** to database and awaits owner approval
 
 ## How It Works
 
@@ -47,30 +48,33 @@ All pending drafts can be viewed and approved via the Flask web interface.
 
 ### Architecture
 ```
-┌─────────────────────────────────────────┐
-│ Flask Web Server (port 8080)            │
-│  • View pending approvals               │
-│  • Approve/reject drafts                │
-│  • View review history                  │
-└─────────────────────────────────────────┘
-                    ▲
-                    │
-┌─────────────────────────────────────────┐
-│ Background Polling Loop (APScheduler)   │
-│  • Runs every 5 minutes                 │
-│  • Fetches from Google My Business API  │
-│  • Detects bad reviews                  │
-│  • Generates drafts                     │
-│  • Saves to database                    │
-└─────────────────────────────────────────┘
-                    ▲
-                    │
-┌─────────────────────────────────────────┐
-│ SQLite Database (db/reviews.db)         │
-│  • seen_reviews (deduplication)         │
-│  • pending_replies (drafts waiting)     │
-│  • posted_replies (history)             │
-└─────────────────────────────────────────┘
+┌───────────────────────────────────────────────────────────┐
+│ Uvicorn ASGI Server (owns event loop)                     │
+│  └─ FastAPI Application                                   │
+│     ├─ HTTP Routes (port 8080)                            │
+│     │   • /health, /stats, /reviews                       │
+│     │   • /drafts/{id}/approve, /drafts/{id}/reject       │
+│     │                                                      │
+│     ├─ Telegram Bot (python-telegram-bot, long-polling)  │
+│     │   • /start, /help, /reviews, /stats commands       │
+│     │   • [✅ Post] [❌ Reject] inline buttons            │
+│     │                                                      │
+│     └─ AsyncIOScheduler (every 5 minutes)                 │
+│         └─ Polling Loop (sync, runs in thread pool)       │
+│            • Fetches reviews from Google My Business API  │
+│            • Detects bad reviews                          │
+│            • Generates drafts                             │
+│            • Sends Telegram notifications                 │
+│            • Saves to database                            │
+│                                                            │
+└───────────────────────────────────────────────────────────┘
+                         ▼
+        ┌────────────────────────────────┐
+        │ SQLite Database (reviews.db)    │
+        │  • seen_reviews                │
+        │  • pending_replies             │
+        │  • posted_replies              │
+        └────────────────────────────────┘
 ```
 
 ## Using as a Python Module
@@ -175,9 +179,9 @@ See [ROADMAP.md](ROADMAP.md) for the full development plan:
 
 - **Phase 1** ✅ — Core API refactored into reusable module
 - **Phase 2** ✅ — Review polling loop + database persistence
-- **Phase 3** (Next) — Flask web interface for viewing/approving pending drafts
-- **Phase 4** — Telegram bot notifications + mobile approval workflow
-- **Phase 5** — OpenAI integration for intelligent response generation
+- **Phase 3** ✅ — FastAPI web interface for viewing/approving pending drafts
+- **Phase 4** ✅ — Telegram bot notifications + inline approval workflow (python-telegram-bot v21.10)
+- **Phase 5** (Next) — OpenAI integration for intelligent response generation
 - **Phase 6** — Advanced features (analytics, scheduling, multi-language)
 - **Phase 7** — Production deployment (Cloud Run, monitoring, scaling)
 
@@ -187,13 +191,14 @@ See [ROADMAP.md](ROADMAP.md) for the full development plan:
 
 ```
 .
-├── app/                         # Flask application
-│   ├── main.py                 # App factory + initialization
+├── app/                         # FastAPI application
+│   ├── main.py                 # FastAPI app + lifespan context manager
 │   ├── config.py               # Environment configuration
-│   ├── routes.py               # Web endpoints
+│   ├── routes.py               # APIRouter endpoints
 │   └── services/               # Core business logic
 │       ├── google_api.py        # Google My Business API wrapper
-│       ├── polling.py           # Background polling loop
+│       ├── polling.py           # Background polling loop (AsyncIOScheduler)
+│       ├── bot.py              # Telegram bot integration (python-telegram-bot)
 │       ├── database.py          # SQLite database layer
 │       └── utils.py             # Helper functions
 ├── db/                          # SQLite database directory

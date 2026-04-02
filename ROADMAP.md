@@ -1,14 +1,15 @@
-# Telegram Bot Roadmap
+# Development Roadmap
 
-Build a Telegram bot for restaurant owners to monitor Google My Business reviews in real-time, with AI-generated draft responses and owner approval workflow.
+Build a production-grade system for restaurant owners to monitor Google My Business reviews in real-time, with Telegram notifications, AI-generated draft responses, and owner approval workflow.
 
 ## Overview
 
-The bot will enable Shawar'Mama (5 locations across Paris) to:
-- **Receive instant notifications** when bad reviews (≤3 stars) are posted
-- **Get AI-drafted responses** via OpenAI, tailored to each review
-- **Approve or edit** responses before posting them on Google
-- **Browse all reviews** across locations via Telegram commands
+The system enables Shawar'Mama (5 locations across Paris) to:
+- **Receive instant notifications** when bad reviews (≤3 stars) are posted (✅ Phase 4 complete)
+- **Approve or reject** responses via Telegram inline buttons (✅ Phase 4 complete)
+- **Get AI-drafted responses** via OpenAI, tailored to each review (🔄 Phase 5 in progress)
+- **Edit and refine** responses before posting them on Google (Phase 6 planned)
+- **Browse all reviews** across locations via Telegram commands (✅ Phase 4 complete)
 
 ### Architecture
 
@@ -133,35 +134,38 @@ Cloud Run app (main.py)
 
 ---
 
-### Phase 4: Telegram bot (webhook mode)
-**Goal:** Enable the owner to receive notifications and approve/edit responses.
+### Phase 4: Telegram bot notifications + approval workflow
+**Status:** ✅ **COMPLETE**
 
-**Tasks:**
-- Create `bot.py` with `python-telegram-bot` v20+ (async):
-  - `/start` — greet owner, confirm authenticated
-  - `/reviews` — show latest reviews across all locations (with pagination)
-  - `/locations` — list all 5 Shawar'Mama locations
-  - Inline keyboard handler for `[✅ Post]` / `[✏️ Edit]` buttons on draft messages
-  - `ConversationHandler` for the edit flow:
-    1. Owner taps `[✏️ Edit]`
-    2. Bot asks: "Send your revised response (or /cancel):"
-    3. Owner sends new text
-    4. Bot asks: "Confirm this text? [✅ Yes] [❌ Cancel]"
-    5. If yes → post to Google + mark as done
-- Restrict bot to a single owner via `TELEGRAM_OWNER_CHAT_ID` (reject all other users)
-- Use webhook mode (not polling) for Cloud Run
+**Completed Tasks:**
+- ✅ Migrated from Flask + background thread to FastAPI with proper event loop
+- ✅ Created `bot.py` with `python-telegram-bot` v21.10 (async, Application pattern):
+  - `/start` — greet owner, show welcome message with available commands
+  - `/help` — detailed command reference
+  - `/reviews` — list all pending draft replies awaiting approval
+  - `/stats` — database statistics (total reviews, pending approvals, posted replies)
+  - Inline keyboard handler for `[✅ Post]` and `[❌ Reject]` buttons on notification messages
+  - Owner-only access via `TELEGRAM_OWNER_CHAT_ID` check
+- ✅ Integrated bot into FastAPI lifespan context manager (same event loop)
+- ✅ Telegram bot runs in long-polling mode (suitable for local development)
+- ✅ `send_review_notification()` bridges sync polling thread to async bot using `asyncio.run_coroutine_threadsafe()`
+- ✅ Verified bot receives notifications when bad reviews detected
+- ✅ Verified owner can approve/reject via inline buttons
 
-**Verification:**
-```bash
-# Local testing with long-polling
-python -c "from bot import create_app; create_app().run_polling()"
-# Then manually message the bot
-```
+**Architecture:** 
+- Uvicorn ASGI server owns the main event loop
+- FastAPI app uses lifespan context manager to initialize bot, polling scheduler, and routes
+- All three components (web routes, Telegram bot, polling) share the same event loop
+- No thread race conditions or globals (unlike previous Flask implementation)
+
+**Future Enhancement (Phase 5+):**
+- Add `ConversationHandler` for draft editing workflow
+- Support webhook mode for Cloud Run production deployment
 
 ---
 
-### Phase 5: AI response generation
-**Goal:** Automatically draft empathetic, professional responses to bad reviews.
+### Phase 5: AI response generation (Next)
+**Goal:** Automatically draft empathetic, professional responses to bad reviews using OpenAI.
 
 **Tasks:**
 - Create `ai_responder.py` with OpenAI SDK:
@@ -194,98 +198,34 @@ print(draft)
 
 ---
 
-### Phase 6: Wire it all together
-**Goal:** Create the main Cloud Run app that ties all components together.
+### Phase 6: Advanced features & webhook mode
+**Goal:** Add draft editing workflow and prepare webhook mode for production.
 
 **Tasks:**
-- Create `main.py` (Flask or FastAPI):
-  - `POST /pubsub` — Pub/Sub webhook endpoint:
-    1. Decode incoming message
-    2. Parse review (extract ID, location, rating, text, reviewer name)
-    3. `has_seen_review(id)` → skip if seen
-    4. `mark_seen(id, ...)`
-    5. If `rating ≤ 3` (bad review):
-       - `generate_response(...)` → draft
-       - `save_pending_reply(...)`
-       - Send Telegram message with review + draft + `[✅ Post] [✏️ Edit]` buttons
-    6. Return 200 OK to acknowledge the message
-  - `POST /telegram` — Telegram webhook endpoint (pass to bot handler)
-  - `GET /health` — health check for Cloud Run
-- Create `Dockerfile`:
-  ```dockerfile
-  FROM python:3.11-slim
-  WORKDIR /app
-  COPY requirements.txt .
-  RUN pip install -r requirements.txt
-  COPY . .
-  CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "1", "main:app"]
-  ```
-
-**Verification:**
-- Run locally: `python main.py`
-- Test `/health` endpoint: `curl http://localhost:8080/health`
-- Send a test Pub/Sub message (via Google Cloud console)
-- Check Telegram for notifications
+- ✏️ Add `ConversationHandler` for draft editing:
+  1. Owner taps `[✏️ Edit]` on a notification (future enhancement)
+  2. Bot asks: "Send your revised response (or /cancel):"
+  3. Owner sends new text
+  4. Bot asks: "Confirm? [✅ Yes] [❌ Cancel]"
+  5. If yes → post to Google + mark as done
+- 🔄 Implement webhook mode for production (instead of long-polling)
+  - Switch to `POST /telegram` webhook endpoint
+  - Register webhook with Telegram API
+- 📊 Add analytics: per-location statistics, response time metrics
+- 🌍 Support for multi-language prompts
 
 ---
 
-### Phase 7: Configuration & deployment
-**Goal:** Make the system production-ready on Google Cloud.
+### Phase 7: Production deployment
+**Goal:** Deploy to Google Cloud Run with monitoring and scaling.
 
 **Tasks:**
-- Create `.env.example`:
-  ```
-  # Telegram
-  TELEGRAM_BOT_TOKEN=your_telegram_token_here
-  TELEGRAM_OWNER_CHAT_ID=your_chat_id_here
-
-  # OpenAI
-  OPENAI_API_KEY=sk-...
-
-  # Google Cloud
-  GOOGLE_PROJECT_ID=your-gcp-project
-  GOOGLE_TOKEN_PATH=/secrets/token.pickle
-  PUBSUB_TOPIC=projects/your-gcp-project/topics/gmb-reviews
-
-  # Settings
-  BAD_REVIEW_THRESHOLD=3
-  FLASK_PORT=8080
-  ```
-
-- Deploy to Google Cloud Run:
-  1. **Pre-generate `token.pickle` locally:**
-     ```bash
-     python -c "from google_api import authenticate; authenticate()"
-     # Browser will pop up for OAuth consent
-     # token.pickle will be saved
-     ```
-  2. **Store token as a secret:**
-     ```bash
-     gcloud secrets create gmb-token --data-file=token.pickle
-     ```
-  3. **Deploy:**
-     ```bash
-     gcloud run deploy gmb-bot \
-       --source . \
-       --platform managed \
-       --region us-central1 \
-       --set-env-vars GOOGLE_PROJECT_ID=... \
-       --secrets GOOGLE_TOKEN_PATH=gmb-token:latest
-     ```
-  4. **Register Telegram webhook:**
-     ```bash
-     curl -X POST https://api.telegram.org/bot<TOKEN>/setWebhook \
-       -H "Content-Type: application/json" \
-       -d '{"url":"https://<cloud-run-url>/telegram"}'
-     ```
-  5. **Register GMB Pub/Sub notifications:**
-     - Use the deployed Cloud Run URL as the Pub/Sub push endpoint
-     - Register with Google My Business API as shown in Phase 2
-
-**Monitoring:**
-- Cloud Run logs: `gcloud run logs read gmb-bot --limit 50`
-- Pub/Sub messages: Google Cloud console → Pub/Sub → topic
-- Telegram updates: your DMs with the bot
+- 🔧 Create `Dockerfile` for containerization
+- 🔐 Store secrets securely (OAuth tokens, API keys) via Google Secret Manager
+- 🚀 Deploy to Cloud Run with auto-scaling
+- 📊 Set up monitoring and logging via Cloud Logging
+- 🔄 Configure webhook mode for Telegram (instead of long-polling)
+- 📈 Add uptime monitoring and alerting
 
 ---
 

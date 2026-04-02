@@ -6,12 +6,13 @@ generates draft responses, and saves them for owner approval.
 """
 
 from datetime import datetime
-from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.config import BAD_REVIEW_THRESHOLD, POLL_INTERVAL_MINUTES
 from app.services.google_api import get_all_locations, get_reviews
 from app.services.database import has_seen_review, mark_seen, save_pending_reply
 from app.services.utils import convert_rating_to_int, generate_draft_response
+from app.services.bot import send_review_notification
 
 
 # Global scheduler instance
@@ -79,13 +80,20 @@ def polling_loop(creds, locations):
 
                     bad_reviews_found += 1
 
-                    # TODO: Phase 4 will add Telegram notification here
-                    # For now, just log it
+                    # Phase 4: Send Telegram notification to owner
+                    send_review_notification(
+                        review_id=review_id,
+                        location_title=location_title,
+                        reviewer_name=reviewer_name,
+                        star_rating=star_rating,
+                        review_text=review_text,
+                        draft_reply=draft_reply
+                    )
+
                     print(f"   📝 Draft saved: {draft_reply[:50]}...")
 
         if bad_reviews_found > 0:
-            print(f"✅ Found {bad_reviews_found} bad review(s)")
-            # TODO: Phase 4 - notify owner via Telegram
+            print(f"✅ Found {bad_reviews_found} bad review(s) — owner notified via Telegram")
         else:
             print("✅ No new bad reviews")
 
@@ -94,14 +102,14 @@ def polling_loop(creds, locations):
 
 
 def start_polling(creds, locations):
-    """Initialize and start the background polling scheduler."""
+    """Initialize and start the async polling scheduler."""
     global scheduler
 
     if scheduler is not None and scheduler.running:
         print("⚠️  Polling scheduler already running")
         return
 
-    scheduler = BackgroundScheduler()
+    scheduler = AsyncIOScheduler()
     scheduler.add_job(
         polling_loop,
         'interval',

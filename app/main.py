@@ -1,27 +1,25 @@
 """
-Main application: Flask web server + background polling loop
+Main application: FastAPI server with polling loop and Telegram bot
 
 Polls Google My Business for reviews every N minutes.
 When bad reviews (≤3 stars) are detected, generates draft and notifies owner.
 """
 
-from flask import Flask
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
 
 from app.config import FLASK_PORT
 from app.services.google_api import authenticate, get_all_locations
 from app.services.database import init_db
-from app.services.polling import start_polling
-from app.routes import register_routes
+from app.services.polling import start_polling, stop_polling
+from app.services.bot import start_bot, stop_bot
+from app.routes import router
 
 
-def create_app():
-    """Create and configure the Flask application."""
-    app = Flask(__name__)
-    return app
-
-
-def initialize_app(app):
-    """Initialize credentials, locations, and routes."""
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """FastAPI lifespan context manager: startup and shutdown."""
+    # Startup
     print("🚀 Initializing application...")
 
     try:
@@ -38,26 +36,34 @@ def initialize_app(app):
         # Initialize database
         init_db()
 
-        # Register Flask routes (they need access to creds and locations)
-        register_routes(app, creds, locations)
+        # Store creds and locations in app state for route handlers
+        app.state.creds = creds
+        app.state.locations = locations
 
-        # Start polling
+        # Start Telegram bot in the same event loop
+        await start_bot(creds)
+
+        # Start polling scheduler (runs sync polling_loop in thread pool executor)
         start_polling(creds, locations)
 
         print("✅ Application initialized successfully\n")
-
-        return creds, locations
 
     except Exception as e:
         print(f"❌ Initialization failed: {e}")
         raise
 
+    # Application is running
+    yield
 
-if __name__ == '__main__':
-    # Create and initialize app
-    app = create_app()
-    initialize_app(app)
+    # Shutdown
+    print("\n🛑 Shutting down...")
+    await stop_bot()
+    stop_polling()
+    print("✅ Shutdown complete")
 
-    # Run Flask server
-    print(f"🌐 Starting Flask server on port {FLASK_PORT}...")
-    app.run(host='0.0.0.0', port=FLASK_PORT, debug=False)
+
+# Create FastAPI app with lifespan
+app = FastAPI(lifespan=lifespan)
+
+# Include routes
+app.include_router(router)

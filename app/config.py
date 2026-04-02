@@ -18,8 +18,8 @@ GOOGLE_PROJECT_ID = os.getenv('GOOGLE_PROJECT_ID', 'your-gcp-project-id')
 TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
 TELEGRAM_OWNER_CHAT_ID = os.getenv('TELEGRAM_OWNER_CHAT_ID')
 
-# OpenAI Configuration (Phase 5)
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+# Anthropic Configuration (Phase 4-5)
+ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
 
 # Application Settings
 BAD_REVIEW_THRESHOLD = int(os.getenv('BAD_REVIEW_THRESHOLD', '3'))
