@@ -9,9 +9,12 @@ import asyncio
 from typing import Optional
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, ContextTypes, CommandHandler, CallbackQueryHandler
+from telegram.ext import (
+    Application, ContextTypes, CommandHandler, CallbackQueryHandler,
+    ConversationHandler, MessageHandler, filters,
+)
 
-from app.config import TELEGRAM_BOT_TOKEN, TELEGRAM_OWNER_CHAT_ID
+from app.config import TELEGRAM_BOT_TOKEN, TELEGRAM_OWNER_CHAT_IDS
 from app.services.database import (
     get_all_pending_replies, get_stats, get_pending_reply, mark_posted, mark_rejected
 )
@@ -21,6 +24,32 @@ from app.services.google_api import post_reply
 # Global bot application reference
 _app: Optional[Application] = None
 _main_loop: Optional[asyncio.AbstractEventLoop] = None
+
+# Short-key lookup: maps int key → full review_id (avoids Telegram's 64-byte callback_data limit)
+# Keys are stored in bot_data["review_id_map"] so they persist across handlers.
+
+def _store_review_id(context, review_id: str) -> int:
+    """Store a full review_id in bot_data and return a short integer key."""
+    store = context.bot_data.setdefault("review_id_map", {})
+    # Reuse existing key if already stored
+    for key, val in store.items():
+        if val == review_id:
+            return key
+    new_key = len(store)
+    store[new_key] = review_id
+    return new_key
+
+
+def _resolve_review_id(context, short_key: str) -> Optional[str]:
+    """Resolve a short integer key back to the full review_id."""
+    store = context.bot_data.get("review_id_map", {})
+    return store.get(int(short_key))
+
+# Safety flag: set to False when ready to post to Google in production
+DRY_RUN = True
+
+# ConversationHandler states
+WAITING_FOR_EDIT, CONFIRM_EDIT = range(2)
 
 
 async def start_bot(creds):
@@ -53,7 +82,28 @@ async def start_bot(creds):
     _app.add_handler(CommandHandler("reviews", cmd_reviews))
     _app.add_handler(CommandHandler("stats", cmd_stats))
 
-    # Register callback handler for inline buttons
+    # Register edit conversation handler (must come before the flat CallbackQueryHandler)
+    edit_conv = ConversationHandler(
+        entry_points=[CallbackQueryHandler(handle_edit_start, pattern=r"^edit:")],
+        states={
+            WAITING_FOR_EDIT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, handle_edit_text),
+                CommandHandler("cancel", handle_edit_cancel),
+            ],
+            CONFIRM_EDIT: [
+                CallbackQueryHandler(handle_post_edit, pattern=r"^post_edit$"),
+                CallbackQueryHandler(handle_edit_cancel_confirm, pattern=r"^cancel_edit$"),
+                CommandHandler("cancel", handle_edit_cancel),
+            ],
+        },
+        fallbacks=[CommandHandler("cancel", handle_edit_cancel)],
+    )
+    _app.add_handler(edit_conv)
+
+    # Register manage callback (must come before the flat CallbackQueryHandler)
+    _app.add_handler(CallbackQueryHandler(handle_manage, pattern=r"^manage:"))
+
+    # Register callback handler for approve/reject inline buttons
     _app.add_handler(CallbackQueryHandler(handle_callback))
 
     # Initialize the application
@@ -87,6 +137,36 @@ async def stop_bot():
     await _app.stop()
     await _app.shutdown()
     print("   ✅ Telegram bot stopped")
+
+
+def send_good_review_notification(location_title: str, reviewer_name: str,
+                                  star_rating: int, review_text: str):
+    """
+    Send a simple notification about a new good review (>3 stars).
+
+    No action buttons — just informational.
+    """
+    if _app is None or _main_loop is None:
+        return
+
+    coro = _send_good_notification_async(location_title, reviewer_name, star_rating, review_text)
+    asyncio.run_coroutine_threadsafe(coro, _main_loop)
+
+
+async def _send_good_notification_async(location_title: str, reviewer_name: str,
+                                        star_rating: int, review_text: str):
+    """Async version of sending a good review notification."""
+    try:
+        stars = "⭐" * star_rating
+        message = (
+            f"{stars} NEW REVIEW — {location_title} ({star_rating}★)\n"
+            f"From: {reviewer_name}\n\n"
+            f'"{review_text}"'
+        )
+        for chat_id in TELEGRAM_OWNER_CHAT_IDS:
+            await _app.bot.send_message(chat_id=chat_id, text=message)
+    except Exception as e:
+        print(f"⚠️  Failed to send good review notification: {e}")
 
 
 def send_review_notification(review_id: str, location_title: str, reviewer_name: str,
@@ -128,20 +208,29 @@ async def _send_notification_async(review_id: str, location_title: str, reviewer
             f'"{draft_reply}"'
         )
 
-        # Create inline keyboard for approve/reject
+        # Store review_id and use short key in callback_data (Telegram limit: 64 bytes)
+        store = _app.bot_data.setdefault("review_id_map", {})
+        short_key = None
+        for k, v in store.items():
+            if v == review_id:
+                short_key = k
+                break
+        if short_key is None:
+            short_key = len(store)
+            store[short_key] = review_id
+
+        # Create inline keyboard for approve/edit/reject
         keyboard = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("✅ Post", callback_data=f"approve:{review_id}"),
-                InlineKeyboardButton("❌ Reject", callback_data=f"reject:{review_id}"),
+                InlineKeyboardButton("✅ Post", callback_data=f"approve:{short_key}"),
+                InlineKeyboardButton("✏️ Edit", callback_data=f"edit:{short_key}"),
+                InlineKeyboardButton("❌ Reject", callback_data=f"reject:{short_key}"),
             ]
         ])
 
-        # Send to owner
-        await _app.bot.send_message(
-            chat_id=int(TELEGRAM_OWNER_CHAT_ID),
-            text=message,
-            reply_markup=keyboard,
-        )
+        # Send to all owners
+        for chat_id in TELEGRAM_OWNER_CHAT_IDS:
+            await _app.bot.send_message(chat_id=chat_id, text=message, reply_markup=keyboard)
     except Exception as e:
         print(f"⚠️  Failed to send Telegram notification: {e}")
 
@@ -153,7 +242,7 @@ async def _send_notification_async(review_id: str, location_title: str, reviewer
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command."""
     # Owner check
-    if str(update.effective_chat.id) != str(TELEGRAM_OWNER_CHAT_ID):
+    if update.effective_chat.id not in TELEGRAM_OWNER_CHAT_IDS:
         await update.message.reply_text("🚫 Unauthorized. This bot is for the owner only.")
         return
 
@@ -170,7 +259,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /help command."""
     # Owner check
-    if str(update.effective_chat.id) != str(TELEGRAM_OWNER_CHAT_ID):
+    if update.effective_chat.id not in TELEGRAM_OWNER_CHAT_IDS:
         await update.message.reply_text("🚫 Unauthorized.")
         return
 
@@ -181,14 +270,16 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/stats — Show database statistics\n\n"
         "When you receive a review notification:\n"
         "• Tap [✅ Post] to approve and post to Google\n"
-        "• Tap [❌ Reject] to discard the draft"
+        "• Tap [✏️ Edit] to revise the draft before posting\n"
+        "• Tap [❌ Reject] to discard the draft\n\n"
+        "During editing, send /cancel to abort"
     )
 
 
 async def cmd_reviews(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle /reviews command — list pending drafts."""
+    """Handle /reviews command — list pending drafts with Manage buttons."""
     # Owner check
-    if str(update.effective_chat.id) != str(TELEGRAM_OWNER_CHAT_ID):
+    if update.effective_chat.id not in TELEGRAM_OWNER_CHAT_IDS:
         await update.message.reply_text("🚫 Unauthorized.")
         return
 
@@ -198,22 +289,27 @@ async def cmd_reviews(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("✅ No pending reviews!")
         return
 
-    message = f"📋 Pending Reviews ({len(pending)}):\n\n"
-    for i, review in enumerate(pending, 1):
-        message += (
-            f"{i}. {review['location_name']} ({review['star_rating']}★)\n"
-            f"   From: {review['reviewer_name']}\n"
-            f'   "{review["review_text"][:80]}..."\n'
-            f"   Draft: {review['draft_reply'][:80]}...\n\n"
-        )
+    await update.message.reply_text(f"📋 {len(pending)} pending review(s):")
 
-    await update.message.reply_text(message)
+    for review in pending:
+        stars = "⭐" * review["star_rating"]
+        review_text = review["review_text"] or "No text"
+        message = (
+            f"{stars} {review['location_name']} ({review['star_rating']}★)\n"
+            f"From: {review['reviewer_name']}\n"
+            f'"{review_text[:120]}{"..." if len(review_text) > 120 else ""}"'
+        )
+        short_key = _store_review_id(context, review["review_id"])
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("🔧 Manage", callback_data=f"manage:{short_key}")
+        ]])
+        await update.message.reply_text(message, reply_markup=keyboard)
 
 
 async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /stats command — show database statistics."""
     # Owner check
-    if str(update.effective_chat.id) != str(TELEGRAM_OWNER_CHAT_ID):
+    if update.effective_chat.id not in TELEGRAM_OWNER_CHAT_IDS:
         await update.message.reply_text("🚫 Unauthorized.")
         return
 
@@ -230,6 +326,148 @@ async def cmd_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============================================================================
+# Manage Callback Handler
+# ============================================================================
+
+async def handle_manage(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Owner tapped [🔧 Manage] — show full review + draft + action buttons."""
+    query = update.callback_query
+    await query.answer()
+
+    _, short_key = query.data.split(":", 1)
+    review_id = _resolve_review_id(context, short_key)
+    if not review_id:
+        await query.edit_message_text("❌ Session expired — use /reviews again")
+        return
+
+    draft = get_pending_reply(review_id)
+    if not draft:
+        await query.edit_message_text("❌ Draft not found")
+        return
+
+    stars = "⭐" * draft["star_rating"]
+    review_text = draft["review_text"] or "No text"
+    draft_reply = draft["draft_reply"] or "No draft"
+
+    message = (
+        f"{stars} {draft['location_name']} ({draft['star_rating']}★)\n"
+        f"From: {draft['reviewer_name']}\n\n"
+        f'"{review_text}"\n\n'
+        f"Draft response:\n"
+        f'"{draft_reply}"'
+    )
+
+    short_key = _store_review_id(context, review_id)
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ Post", callback_data=f"approve:{short_key}"),
+        InlineKeyboardButton("✏️ Edit", callback_data=f"edit:{short_key}"),
+        InlineKeyboardButton("❌ Reject", callback_data=f"reject:{short_key}"),
+    ]])
+
+    await query.edit_message_text(message, reply_markup=keyboard)
+
+
+# ============================================================================
+# Edit Conversation Handler
+# ============================================================================
+
+async def handle_edit_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Entry point: owner tapped [✏️ Edit] on a notification."""
+    query = update.callback_query
+    await query.answer()
+
+    _, short_key = query.data.split(":", 1)
+    review_id = _resolve_review_id(context, short_key)
+    if not review_id:
+        await query.edit_message_text("❌ Session expired — use /reviews again")
+        return ConversationHandler.END
+
+    draft = get_pending_reply(review_id)
+    if not draft:
+        await query.edit_message_text("❌ Draft not found")
+        return ConversationHandler.END
+
+    context.user_data["editing_review_id"] = review_id
+
+    await query.edit_message_text(
+        f"✏️ Editing draft for {draft['location_name']} ({draft['star_rating']}★)\n\n"
+        f"Current draft:\n\"{draft['draft_reply']}\"\n\n"
+        "Send your revised response, or /cancel to abort:"
+    )
+    return WAITING_FOR_EDIT
+
+
+async def handle_edit_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Owner sent revised text — ask for confirmation."""
+    new_text = update.message.text
+    context.user_data["edit_text"] = new_text
+
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Post", callback_data="post_edit"),
+            InlineKeyboardButton("❌ Cancel", callback_data="cancel_edit"),
+        ]
+    ])
+
+    await update.message.reply_text(
+        f"New response:\n\"{new_text}\"\n\nPost this to Google?",
+        reply_markup=keyboard,
+    )
+    return CONFIRM_EDIT
+
+
+async def handle_post_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Owner confirmed edited text — post it to Google."""
+    query = update.callback_query
+    await query.answer()
+
+    review_id = context.user_data.get("editing_review_id")
+    new_text = context.user_data.get("edit_text")
+
+    draft = get_pending_reply(review_id)
+    creds = context.bot_data.get("creds")
+
+    if not draft or not creds:
+        await query.edit_message_text("❌ Could not retrieve draft or credentials")
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    if DRY_RUN:
+        await query.edit_message_text(
+            f"⚠️ Dry run — not posted to Google.\n\nWould have posted:\n\"{new_text}\""
+        )
+        print(f"[DRY RUN] Would post edited reply for review {review_id}")
+    else:
+        result = post_reply(creds, draft["location_name"], review_id, new_text)
+        if result:
+            mark_posted(review_id, new_text)
+            await query.edit_message_text(f"✅ Posted to Google My Business:\n\"{new_text}\"")
+            print(f"✅ Review {review_id} posted with edited reply")
+        else:
+            await query.edit_message_text("❌ Failed to post to Google — check logs")
+            print(f"❌ Failed to post edited reply for review {review_id}")
+
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+async def handle_edit_cancel_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Owner cancelled from the confirmation step."""
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("❌ Edit cancelled")
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+async def handle_edit_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Owner sent /cancel during the edit flow."""
+    await update.message.reply_text("❌ Edit cancelled")
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+# ============================================================================
 # Callback Handler (for inline button presses)
 # ============================================================================
 
@@ -240,9 +478,14 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # Parse callback data
     try:
-        action, review_id = query.data.split(":", 1)
+        action, short_key = query.data.split(":", 1)
     except ValueError:
         await query.edit_message_text("❌ Invalid callback data")
+        return
+
+    review_id = _resolve_review_id(context, short_key)
+    if not review_id:
+        await query.edit_message_text("❌ Session expired — use /reviews again")
         return
 
     # Fetch draft from database
@@ -257,19 +500,22 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if action == "approve":
-        # Post the reply to Google My Business
-        location_name = draft["location_name"]
         reply_text = draft["draft_reply"]
 
-        result = post_reply(creds, location_name, review_id, reply_text)
-        if result:
-            # Mark as posted in database
-            mark_posted(review_id, reply_text)
-            await query.edit_message_text("✅ Posted to Google My Business")
-            print(f"✅ Review {review_id} approved and posted")
+        if DRY_RUN:
+            await query.edit_message_text(
+                f"⚠️ Dry run — not posted to Google.\n\nWould have posted:\n\"{reply_text}\""
+            )
+            print(f"[DRY RUN] Would post reply for review {review_id}")
         else:
-            await query.edit_message_text("❌ Failed to post to Google — check logs")
-            print(f"❌ Failed to post review {review_id}")
+            result = post_reply(creds, draft["location_name"], review_id, reply_text)
+            if result:
+                mark_posted(review_id, reply_text)
+                await query.edit_message_text("✅ Posted to Google My Business")
+                print(f"✅ Review {review_id} approved and posted")
+            else:
+                await query.edit_message_text("❌ Failed to post to Google — check logs")
+                print(f"❌ Failed to post review {review_id}")
 
     elif action == "reject":
         # Mark as rejected in database

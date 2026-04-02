@@ -12,7 +12,7 @@ from app.config import BAD_REVIEW_THRESHOLD, POLL_INTERVAL_MINUTES
 from app.services.google_api import get_all_locations, get_reviews
 from app.services.database import has_seen_review, mark_seen, save_pending_reply
 from app.services.utils import convert_rating_to_int, generate_draft_response
-from app.services.bot import send_review_notification
+from app.services.bot import send_review_notification, send_good_review_notification
 
 
 # Global scheduler instance
@@ -80,7 +80,7 @@ def polling_loop(creds, locations):
 
                     bad_reviews_found += 1
 
-                    # Phase 4: Send Telegram notification to owner
+                    # Send Telegram notification with draft + action buttons
                     send_review_notification(
                         review_id=review_id,
                         location_title=location_title,
@@ -91,6 +91,16 @@ def polling_loop(creds, locations):
                     )
 
                     print(f"   📝 Draft saved: {draft_reply[:50]}...")
+                else:
+                    print(f"⭐ Good review: {reviewer_name} ({star_rating}★) - {location_title}")
+
+                    # Notify owner (informational only, no action buttons)
+                    send_good_review_notification(
+                        location_title=location_title,
+                        reviewer_name=reviewer_name,
+                        star_rating=star_rating,
+                        review_text=review_text,
+                    )
 
         if bad_reviews_found > 0:
             print(f"✅ Found {bad_reviews_found} bad review(s) — owner notified via Telegram")
