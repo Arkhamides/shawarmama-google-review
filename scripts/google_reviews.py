@@ -8,8 +8,8 @@ across all your restaurant locations.
 This script imports core API logic from app.services.external.google.
 
 Usage:
-    python -m cli.google_reviews              # Normal mode: show all reviews
-    python -m cli.google_reviews --debug      # Debug mode: show all location details
+    python -m scripts.google_reviews              # Normal mode: show all reviews
+    python -m scripts.google_reviews --debug      # Debug mode: show all location details
 """
 
 import sys
