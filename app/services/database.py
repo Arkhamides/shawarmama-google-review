@@ -9,6 +9,9 @@ import json
 from datetime import datetime
 from pathlib import Path
 
+from app.logger import get_logger
+
+logger = get_logger(__name__)
 
 DB_PATH = 'db/reviews.db'
 
@@ -64,7 +67,7 @@ def init_db():
 
     conn.commit()
     conn.close()
-    print(f"✅ Database initialized at {DB_PATH}")
+    logger.info("Database initialized at %s", DB_PATH)
 
 
 def has_seen_review(review_id):

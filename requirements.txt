@@ -8,3 +8,4 @@ uvicorn[standard]
 apscheduler==3.10.4
 anthropic>=0.28.0
 python-telegram-bot==21.10
+tenacity>=8.2.0

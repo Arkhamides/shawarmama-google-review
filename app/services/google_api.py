@@ -11,16 +11,32 @@ Requirements:
 - Token cache will be saved to token.pickle (or custom path via TOKEN_PATH env var)
 """
 
+import logging
 import os
 import pickle
 import requests
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
+from tenacity import (
+    retry, retry_if_exception_type,
+    stop_after_attempt, wait_exponential,
+    before_sleep_log, RetryError,
+)
 
+from app.logger import get_logger
+
+logger = get_logger(__name__)
 
 SCOPES = ['https://www.googleapis.com/auth/business.manage']
 TOKEN_PATH = os.getenv('GOOGLE_TOKEN_PATH', 'token.pickle')
+
+# Status codes that warrant a retry (rate-limit / server-side transient)
+_TRANSIENT_CODES = {429, 500, 503}
+
+
+class _TransientGoogleError(Exception):
+    """Raised internally when a Google API call returns a transient HTTP error."""
 
 
 def authenticate():
@@ -87,11 +103,10 @@ def get_all_accounts(creds):
             accounts = result.get('accounts', [])
             return accounts
         else:
-            print(f"Error fetching accounts: Status {response.status_code}")
-            print(response.text)
+            logger.warning("Error fetching accounts: status %s — %s", response.status_code, response.text)
             return []
     except Exception as e:
-        print(f"Error fetching accounts: {e}")
+        logger.error("Error fetching accounts: %s", e, exc_info=True)
         return []
 
 
@@ -115,8 +130,26 @@ def get_locations_for_account(service, account_id):
         locations = result.get('locations', [])
         return locations
     except Exception as e:
-        print(f"Error fetching locations for {account_id}: {e}")
+        logger.error("Error fetching locations for %s: %s", account_id, e, exc_info=True)
         return []
+
+
+@retry(
+    retry=retry_if_exception_type(_TransientGoogleError),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=False,
+)
+def _fetch_reviews_inner(headers: dict, url: str) -> list:
+    """Inner call with retry; raises _TransientGoogleError on 429/500/503."""
+    response = requests.get(url, headers=headers)
+    if response.status_code == 200:
+        return response.json().get('reviews', [])
+    if response.status_code in _TRANSIENT_CODES:
+        raise _TransientGoogleError(f"HTTP {response.status_code}")
+    logger.warning("Error fetching reviews: status %s", response.status_code)
+    return []
 
 
 def get_reviews(creds, location_name):
@@ -132,30 +165,41 @@ def get_reviews(creds, location_name):
         Returns empty list on error.
     """
     try:
-        # Refresh credentials if needed
         if creds.expired:
             creds.refresh(Request())
 
-        access_token = creds.token
         headers = {
-            'Authorization': f'Bearer {access_token}',
-            'Content-Type': 'application/json'
+            'Authorization': f'Bearer {creds.token}',
+            'Content-Type': 'application/json',
         }
-
-        # Use REST API to fetch reviews
         url = f'https://mybusiness.googleapis.com/v4/accounts/me/{location_name}/reviews'
-        response = requests.get(url, headers=headers)
-
-        if response.status_code == 200:
-            result = response.json()
-            reviews = result.get('reviews', [])
-            return reviews
-        else:
-            print(f"Error fetching reviews: Status {response.status_code}")
-            return []
-    except Exception as e:
-        print(f"Error fetching reviews: {e}")
+        return _fetch_reviews_inner(headers, url)
+    except RetryError:
+        logger.warning("get_reviews exhausted retries for location %s", location_name)
         return []
+    except Exception as e:
+        logger.error("Error fetching reviews for %s: %s", location_name, e, exc_info=True)
+        return []
+
+
+@retry(
+    retry=retry_if_exception_type(_TransientGoogleError),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=2, max=30),
+    before_sleep=before_sleep_log(logger, logging.WARNING),
+    reraise=False,
+)
+def _post_reply_inner(headers: dict, url: str, payload: dict):
+    """Inner call with retry; raises _TransientGoogleError on 429/500/503.
+    Does NOT retry on 403/404 — those are permanent errors."""
+    response = requests.put(url, headers=headers, json=payload)
+    if response.status_code == 200:
+        return response.json()
+    if response.status_code in _TRANSIENT_CODES:
+        raise _TransientGoogleError(f"HTTP {response.status_code}")
+    # 403, 404, etc. — permanent; log and return None
+    logger.warning("Error posting reply: status %s — %s", response.status_code, response.text)
+    return None
 
 
 def post_reply(creds, location_name, review_id, reply_text):
@@ -172,32 +216,23 @@ def post_reply(creds, location_name, review_id, reply_text):
         The reply object on success, or None on error.
     """
     try:
-        # Refresh credentials if needed
         if creds.expired:
             creds.refresh(Request())
 
-        access_token = creds.token
         headers = {
-            'Authorization': f'Bearer {access_token}',
-            'Content-Type': 'application/json'
+            'Authorization': f'Bearer {creds.token}',
+            'Content-Type': 'application/json',
         }
-
-        # Use REST API to post a reply
-        url = f'https://mybusiness.googleapis.com/v4/accounts/me/{location_name}/reviews/{review_id}/reply'
-        payload = {
-            'comment': reply_text
-        }
-        response = requests.put(url, headers=headers, json=payload)
-
-        if response.status_code == 200:
-            result = response.json()
-            return result
-        else:
-            print(f"Error posting reply: Status {response.status_code}")
-            print(response.text)
-            return None
+        url = (
+            f'https://mybusiness.googleapis.com/v4/accounts/me/'
+            f'{location_name}/reviews/{review_id}/reply'
+        )
+        return _post_reply_inner(headers, url, {'comment': reply_text})
+    except RetryError:
+        logger.error("post_reply exhausted retries for review %s", review_id)
+        return None
     except Exception as e:
-        print(f"Error posting reply: {e}")
+        logger.error("Error posting reply for review %s: %s", review_id, e, exc_info=True)
         return None
 
 

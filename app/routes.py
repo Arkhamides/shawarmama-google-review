@@ -5,6 +5,7 @@ FastAPI route handlers for the Google Reviews application.
 from datetime import datetime
 from fastapi import APIRouter, Request, HTTPException
 
+from app.logger import get_logger
 from app.services.database import (
     get_all_pending_replies, get_stats, get_pending_reply,
     mark_posted, mark_rejected
@@ -13,6 +14,7 @@ from app.services.polling import polling_loop
 from app.services.google_api import post_reply
 
 router = APIRouter()
+logger = get_logger(__name__)
 
 
 @router.get("/health")
@@ -105,6 +107,7 @@ async def approve_draft(review_id: str, request: Request):
 
         # Mark as posted in database
         mark_posted(review_id, reply_text)
+        logger.info("Review %s approved and posted via HTTP API (location: %s)", review_id, location_name)
 
         return {
             "status": "ok",
@@ -141,6 +144,7 @@ async def reject_draft(review_id: str, request: Request):
 
         # Mark as rejected in database
         mark_rejected(review_id)
+        logger.info("Review %s rejected via HTTP API", review_id)
 
         return {
             "status": "ok",

@@ -6,7 +6,10 @@ Falls back gracefully if API key is not available.
 """
 
 import anthropic
-from app.config import ANTHROPIC_API_KEY
+from app.config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL
+from app.logger import get_logger
+
+logger = get_logger(__name__)
 
 
 SYSTEM_PROMPT = """You are a professional restaurant manager for {location_name}, a shawarma restaurant in Paris.
@@ -47,7 +50,7 @@ def generate_ai_response(location_name: str, reviewer_name: str, star_rating: in
         user_message = f"{star_rating}-star review from {reviewer_name}:\n\n{review_text}"
 
         response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
+            model=ANTHROPIC_MODEL,
             max_tokens=300,
             system=SYSTEM_PROMPT.format(location_name=location_name),
             messages=[{"role": "user", "content": user_message}]
@@ -55,6 +58,6 @@ def generate_ai_response(location_name: str, reviewer_name: str, star_rating: in
 
         return response.content[0].text
 
-    except Exception as e:
-        print(f"⚠️  AI response generation failed: {e}")
+    except anthropic.APIError as e:
+        logger.warning("AI response generation failed: %s", e)
         return None

@@ -6,6 +6,7 @@ Supports long-polling mode for local development.
 """
 
 import asyncio
+from concurrent.futures import Future
 from typing import Optional
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -14,7 +15,10 @@ from telegram.ext import (
     ConversationHandler, MessageHandler, filters,
 )
 
-from app.config import TELEGRAM_BOT_TOKEN, TELEGRAM_OWNER_CHAT_IDS
+from app.config import TELEGRAM_BOT_TOKEN, TELEGRAM_OWNER_CHAT_IDS, DRY_RUN
+from app.logger import get_logger
+
+logger = get_logger(__name__)
 from app.services.database import (
     get_all_pending_replies, get_stats, get_pending_reply, mark_posted, mark_rejected
 )
@@ -45,9 +49,6 @@ def _resolve_review_id(context, short_key: str) -> Optional[str]:
     store = context.bot_data.get("review_id_map", {})
     return store.get(int(short_key))
 
-# Safety flag: set to False when ready to post to Google in production
-DRY_RUN = True
-
 # ConversationHandler states
 WAITING_FOR_EDIT, CONFIRM_EDIT = range(2)
 
@@ -64,7 +65,7 @@ async def start_bot(creds):
     """
     global _app, _main_loop
 
-    print("   Starting Telegram bot...")
+    logger.info("Starting Telegram bot")
 
     # Build the application
     _app = (
@@ -118,7 +119,7 @@ async def start_bot(creds):
     # Store the current event loop for use in send_review_notification
     _main_loop = asyncio.get_event_loop()
 
-    print("   ✅ Telegram bot started (polling mode)")
+    logger.info("Telegram bot started (polling mode)")
 
 
 async def stop_bot():
@@ -132,11 +133,11 @@ async def stop_bot():
     if _app is None:
         return
 
-    print("   Stopping Telegram bot...")
+    logger.info("Stopping Telegram bot")
     await _app.updater.stop()
     await _app.stop()
     await _app.shutdown()
-    print("   ✅ Telegram bot stopped")
+    logger.info("Telegram bot stopped")
 
 
 def send_good_review_notification(location_title: str, reviewer_name: str,
@@ -166,73 +167,66 @@ async def _send_good_notification_async(location_title: str, reviewer_name: str,
         for chat_id in TELEGRAM_OWNER_CHAT_IDS:
             await _app.bot.send_message(chat_id=chat_id, text=message)
     except Exception as e:
-        print(f"⚠️  Failed to send good review notification: {e}")
+        logger.warning("Failed to send good review notification: %s", e)
 
 
 def send_review_notification(review_id: str, location_title: str, reviewer_name: str,
-                            star_rating: int, review_text: str, draft_reply: str):
+                            star_rating: int, review_text: str, draft_reply: str) -> Optional[Future]:
     """
     Send a notification about a new bad review to the owner via Telegram.
 
-    This function is called from the polling loop (running in a thread pool).
-    It bridges from sync code to the async bot using asyncio.run_coroutine_threadsafe.
+    Called from the polling loop (thread pool). Returns a Future the caller
+    can block on to confirm delivery before marking the review as seen.
 
-    Args:
-        review_id: Review ID for callback data
-        location_title: Location name
-        reviewer_name: Name of reviewer
-        star_rating: Star rating (1-5)
-        review_text: The review text
-        draft_reply: AI-generated draft response
+    Returns None if the bot is not yet initialised.
     """
     if _app is None or _main_loop is None:
-        return
+        logger.warning("Bot not initialised — cannot send notification for review %s", review_id)
+        return None
 
-    # Schedule the async send on the main event loop
     coro = _send_notification_async(review_id, location_title, reviewer_name,
                                     star_rating, review_text, draft_reply)
-    asyncio.run_coroutine_threadsafe(coro, _main_loop)
+    return asyncio.run_coroutine_threadsafe(coro, _main_loop)
 
 
 async def _send_notification_async(review_id: str, location_title: str, reviewer_name: str,
                                    star_rating: int, review_text: str, draft_reply: str):
-    """Async version of sending notification message."""
-    try:
-        # Format the notification message
-        stars = "⭐" * star_rating
-        message = (
-            f"{stars} BAD REVIEW — {location_title} ({star_rating}★)\n"
-            f"From: {reviewer_name}\n\n"
-            f'"{review_text}"\n\n'
-            f"Draft response:\n"
-            f'"{draft_reply}"'
-        )
+    """Async version of sending notification message.
 
-        # Store review_id and use short key in callback_data (Telegram limit: 64 bytes)
-        store = _app.bot_data.setdefault("review_id_map", {})
-        short_key = None
-        for k, v in store.items():
-            if v == review_id:
-                short_key = k
-                break
-        if short_key is None:
-            short_key = len(store)
-            store[short_key] = review_id
+    Exceptions are NOT caught here so they propagate through the Future
+    returned by send_review_notification — letting the polling loop decide
+    whether to mark the review as seen.
+    """
+    stars = "⭐" * star_rating
+    message = (
+        f"{stars} BAD REVIEW — {location_title} ({star_rating}★)\n"
+        f"From: {reviewer_name}\n\n"
+        f'"{review_text}"\n\n'
+        f"Draft response:\n"
+        f'"{draft_reply}"'
+    )
 
-        # Create inline keyboard for approve/edit/reject
-        keyboard = InlineKeyboardMarkup([
-            [
-                InlineKeyboardButton("✅ Post", callback_data=f"approve:{short_key}"),
-                InlineKeyboardButton("✏️ Edit", callback_data=f"edit:{short_key}"),
-                InlineKeyboardButton("❌ Reject", callback_data=f"reject:{short_key}"),
-            ]
-        ])
+    # Store review_id and use short key in callback_data (Telegram limit: 64 bytes)
+    store = _app.bot_data.setdefault("review_id_map", {})
+    short_key = None
+    for k, v in store.items():
+        if v == review_id:
+            short_key = k
+            break
+    if short_key is None:
+        short_key = len(store)
+        store[short_key] = review_id
 
-        # Send to all owners
-        for chat_id in TELEGRAM_OWNER_CHAT_IDS:
-            await _app.bot.send_message(chat_id=chat_id, text=message, reply_markup=keyboard)
-    except Exception as e:
-        print(f"⚠️  Failed to send Telegram notification: {e}")
+    keyboard = InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("✅ Post", callback_data=f"approve:{short_key}"),
+            InlineKeyboardButton("✏️ Edit", callback_data=f"edit:{short_key}"),
+            InlineKeyboardButton("❌ Reject", callback_data=f"reject:{short_key}"),
+        ]
+    ])
+
+    for chat_id in TELEGRAM_OWNER_CHAT_IDS:
+        await _app.bot.send_message(chat_id=chat_id, text=message, reply_markup=keyboard)
 
 
 # ============================================================================
@@ -436,16 +430,16 @@ async def handle_post_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(
             f"⚠️ Dry run — not posted to Google.\n\nWould have posted:\n\"{new_text}\""
         )
-        print(f"[DRY RUN] Would post edited reply for review {review_id}")
+        logger.info("[DRY RUN] Would post edited reply for review %s", review_id)
     else:
         result = post_reply(creds, draft["location_name"], review_id, new_text)
         if result:
             mark_posted(review_id, new_text)
             await query.edit_message_text(f"✅ Posted to Google My Business:\n\"{new_text}\"")
-            print(f"✅ Review {review_id} posted with edited reply")
+            logger.info("Review %s posted with edited reply", review_id)
         else:
             await query.edit_message_text("❌ Failed to post to Google — check logs")
-            print(f"❌ Failed to post edited reply for review {review_id}")
+            logger.error("Failed to post edited reply for review %s", review_id)
 
     context.user_data.clear()
     return ConversationHandler.END
@@ -506,22 +500,22 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text(
                 f"⚠️ Dry run — not posted to Google.\n\nWould have posted:\n\"{reply_text}\""
             )
-            print(f"[DRY RUN] Would post reply for review {review_id}")
+            logger.info("[DRY RUN] Would post reply for review %s", review_id)
         else:
             result = post_reply(creds, draft["location_name"], review_id, reply_text)
             if result:
                 mark_posted(review_id, reply_text)
                 await query.edit_message_text("✅ Posted to Google My Business")
-                print(f"✅ Review {review_id} approved and posted")
+                logger.info("Review %s approved and posted", review_id)
             else:
                 await query.edit_message_text("❌ Failed to post to Google — check logs")
-                print(f"❌ Failed to post review {review_id}")
+                logger.error("Failed to post reply for review %s", review_id)
 
     elif action == "reject":
         # Mark as rejected in database
         mark_rejected(review_id)
         await query.edit_message_text("❌ Draft rejected")
-        print(f"✅ Review {review_id} rejected")
+        logger.info("Review %s rejected", review_id)
 
     else:
         await query.edit_message_text(f"❌ Unknown action: {action}")

@@ -6,13 +6,13 @@ Run with: python run.py
 """
 
 import uvicorn
-from app.config import FLASK_PORT
+from app.config import PORT
 
 
 if __name__ == '__main__':
     uvicorn.run(
         "app.main:app",
         host="0.0.0.0",
-        port=FLASK_PORT,
+        port=PORT,
         reload=False
     )

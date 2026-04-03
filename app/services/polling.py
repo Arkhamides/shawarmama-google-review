@@ -9,11 +9,13 @@ from datetime import datetime
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from app.config import BAD_REVIEW_THRESHOLD, POLL_INTERVAL_MINUTES
+from app.logger import get_logger
 from app.services.google_api import get_all_locations, get_reviews
 from app.services.database import has_seen_review, mark_seen, save_pending_reply
 from app.services.utils import convert_rating_to_int, generate_draft_response
 from app.services.bot import send_review_notification, send_good_review_notification
 
+logger = get_logger(__name__)
 
 # Global scheduler instance
 scheduler = None
@@ -29,72 +31,75 @@ def polling_loop(creds, locations):
     4. Mark review as seen
     """
     if not creds or not locations:
-        print("⚠️  Polling skipped: not authenticated yet")
+        logger.warning("Polling skipped: not authenticated yet")
         return
 
-    print(f"\n🔄 Polling for new reviews... ({datetime.now().strftime('%H:%M:%S')})")
+    logger.info("Polling for new reviews")
 
     bad_reviews_found = 0
 
-    try:
-        for location in locations:
-            location_name = location['name']
-            location_title = location.get('title', 'Unknown')
+    for location in locations:
+        location_name = location['name']
+        location_title = location.get('title', 'Unknown')
 
-            # Fetch reviews for this location
+        try:
             reviews = get_reviews(creds, location_name)
+        except Exception as e:
+            logger.error("Failed to fetch reviews for %s: %s", location_title, e, exc_info=True)
+            continue
 
-            if not reviews:
+        for review in reviews:
+            review_id = review.get('reviewId')
+            if not review_id:
+                continue
+            if has_seen_review(review_id):
                 continue
 
-            # Check each review
-            for review in reviews:
-                review_id = review.get('reviewId')  # Note: Google uses 'reviewId', not 'id'
-                if not review_id:
-                    continue
+            reviewer_name = review.get('reviewer', {}).get('displayName', 'Anonymous')
+            star_rating = convert_rating_to_int(review.get('starRating', 'FIVE'))
+            review_text = review.get('comment', 'No text')
 
-                # Skip if we've already seen this review
-                if has_seen_review(review_id):
-                    continue
-
-                # Extract review details
-                reviewer_name = review.get('reviewer', {}).get('displayName', 'Anonymous')
-                star_rating = convert_rating_to_int(review.get('starRating', 'FIVE'))
-                review_text = review.get('comment', 'No text')
-
-                # Mark as seen
-                mark_seen(review_id, location_name, location_title, reviewer_name, star_rating, review_text)
-
-                # Check if it's a bad review
+            try:
                 if star_rating <= BAD_REVIEW_THRESHOLD:
-                    print(f"⭐ BAD REVIEW detected: {reviewer_name} ({star_rating}★) - {location_title}")
+                    logger.info(
+                        "Bad review detected: %s (%d★) at %s",
+                        reviewer_name, star_rating, location_title,
+                    )
 
-                    # Generate draft response
-                    draft_reply = generate_draft_response(location_title, reviewer_name, star_rating, review_text)
-
-                    # Save to database
+                    draft_reply = generate_draft_response(
+                        location_title, reviewer_name, star_rating, review_text
+                    )
                     save_pending_reply(
                         review_id, location_name, location_title, reviewer_name,
                         star_rating, review_text, draft_reply
                     )
 
-                    bad_reviews_found += 1
-
-                    # Send Telegram notification with draft + action buttons
-                    send_review_notification(
+                    # Wait for the notification to reach Telegram before marking seen.
+                    # If it fails, do NOT mark_seen so the next poll retries.
+                    future = send_review_notification(
                         review_id=review_id,
                         location_title=location_title,
                         reviewer_name=reviewer_name,
                         star_rating=star_rating,
                         review_text=review_text,
-                        draft_reply=draft_reply
+                        draft_reply=draft_reply,
                     )
+                    if future is not None:
+                        future.result(timeout=30)  # raises on Telegram error
 
-                    print(f"   📝 Draft saved: {draft_reply[:50]}...")
+                    mark_seen(review_id, location_name, location_title,
+                              reviewer_name, star_rating, review_text)
+                    bad_reviews_found += 1
+                    logger.debug("Draft saved and owner notified: %.50s…", draft_reply)
+
                 else:
-                    print(f"⭐ Good review: {reviewer_name} ({star_rating}★) - {location_title}")
-
-                    # Notify owner (informational only, no action buttons)
+                    logger.info(
+                        "Good review: %s (%d★) at %s",
+                        reviewer_name, star_rating, location_title,
+                    )
+                    # Good-review notification is informational; mark seen regardless
+                    mark_seen(review_id, location_name, location_title,
+                              reviewer_name, star_rating, review_text)
                     send_good_review_notification(
                         location_title=location_title,
                         reviewer_name=reviewer_name,
@@ -102,13 +107,16 @@ def polling_loop(creds, locations):
                         review_text=review_text,
                     )
 
-        if bad_reviews_found > 0:
-            print(f"✅ Found {bad_reviews_found} bad review(s) — owner notified via Telegram")
-        else:
-            print("✅ No new bad reviews")
+            except Exception as e:
+                logger.error(
+                    "Failed to process review %s (%s) — will retry next poll: %s",
+                    review_id, reviewer_name, e, exc_info=True,
+                )
 
-    except Exception as e:
-        print(f"❌ Polling error: {e}")
+    if bad_reviews_found > 0:
+        logger.info("Found %d bad review(s) — owner notified via Telegram", bad_reviews_found)
+    else:
+        logger.info("No new bad reviews")
 
 
 def start_polling(creds, locations):
@@ -116,7 +124,7 @@ def start_polling(creds, locations):
     global scheduler
 
     if scheduler is not None and scheduler.running:
-        print("⚠️  Polling scheduler already running")
+        logger.warning("Polling scheduler already running")
         return
 
     scheduler = AsyncIOScheduler()
@@ -128,7 +136,7 @@ def start_polling(creds, locations):
         id='review_polling'
     )
     scheduler.start()
-    print(f"✅ Polling scheduler started (every {POLL_INTERVAL_MINUTES} minutes)")
+    logger.info("Polling scheduler started (every %d minutes)", POLL_INTERVAL_MINUTES)
 
     # Run once immediately
     polling_loop(creds, locations)
@@ -141,4 +149,4 @@ def stop_polling():
     if scheduler is not None and scheduler.running:
         scheduler.shutdown()
         scheduler = None
-        print("✅ Polling scheduler stopped")
+        logger.info("Polling scheduler stopped")
