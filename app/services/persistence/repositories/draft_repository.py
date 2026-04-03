@@ -1,64 +1,13 @@
 """
-PostgreSQL Database Layer for Review Management
-
-Tracks seen reviews and pending owner approvals.
-Schema managed by Alembic — run `alembic upgrade head` or call init_db() on startup.
+Repository for pending_replies and posted_replies — draft management and history.
 """
 
-import psycopg2
 import psycopg2.extras
-from alembic.config import Config
-from alembic import command
 
-from app.config import DATABASE_URL
-from app.logger import get_logger
+from app.services.persistence.database import _connect
+from app.services.common.logger import get_logger
 
 logger = get_logger(__name__)
-
-
-def _connect():
-    return psycopg2.connect(DATABASE_URL)
-
-
-def init_db():
-    """Apply all pending Alembic migrations on startup (idempotent)."""
-    alembic_cfg = Config("alembic.ini")
-    command.upgrade(alembic_cfg, "head")
-    logger.info("Database migrations applied (alembic upgrade head)")
-
-
-def has_seen_review(review_id):
-    """Check if we've already seen this review."""
-    conn = _connect()
-    try:
-        cur = conn.cursor()
-        cur.execute('SELECT 1 FROM seen_reviews WHERE review_id = %s', (review_id,))
-        return cur.fetchone() is not None
-    finally:
-        conn.close()
-
-
-def mark_seen(review_id, location_id, location_name, reviewer_name, star_rating, review_text):
-    """Mark a review as seen."""
-    conn = _connect()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            '''
-            INSERT INTO seen_reviews
-                (review_id, location_id, location_name, reviewer_name, star_rating, review_text)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            ON CONFLICT (review_id) DO NOTHING
-            ''',
-            (review_id, location_id, location_name, reviewer_name, star_rating, review_text),
-        )
-        conn.commit()
-    except Exception as e:
-        conn.rollback()
-        logger.error("DB error in mark_seen for %s: %s", review_id, e, exc_info=True)
-        raise
-    finally:
-        conn.close()
 
 
 def save_pending_reply(review_id, location_id, location_name, reviewer_name, star_rating, review_text, draft_reply):

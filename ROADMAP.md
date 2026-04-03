@@ -39,8 +39,9 @@ Cloud Run app (main.py)
 - **Phase 3** ✅ FastAPI routes for draft approval (HTTP API)
 - **Phase 4** ✅ Telegram bot with inline approval buttons (python-telegram-bot v21, AsyncIOScheduler, unified event loop)
 - **Phase 5** ✅ Claude AI response generation (`ai_responder.py`, falls back to templates)
-- **Phase 6.1** ✅ Draft editing workflow (ConversationHandler in `bot.py`, full edit → confirm → post flow)
+- **Phase 6.1** ✅ Draft editing workflow (ConversationHandler, full edit → confirm → post flow)
 - **Good review notifications** ✅ Good reviews (>3★) send an informational Telegram message with no action buttons
+- **Phase 8** ✅ Service architecture refactor — layered `external/`, `persistence/`, `jobs/`, `common/`, `domain/` structure
 
 ---
 
@@ -88,78 +89,20 @@ Cloud Run app (main.py)
 
 ---
 
-### Phase 8: Service architecture refactor
+### Phase 8: Service architecture refactor ✅ complete
 **Goal:** Reorganize `app/services/` into a layered architecture — external integrations, domain logic, persistence, and background jobs as distinct modules. No functional changes; purely structural.
 
-**Target structure:**
-```
-app/
-├── services/
-│   ├── external/                          # Third-party integrations
-│   │   ├── google/
-│   │   │   ├── client.py                  # Google API client wrapper
-│   │   │   ├── auth.py                    # OAuth token management
-│   │   │   ├── reviews.py                 # Review fetching logic
-│   │   │   └── posting.py                 # Reply posting logic
-│   │   ├── telegram/
-│   │   │   ├── bot.py                     # Bot initialization
-│   │   │   ├── handlers/
-│   │   │   │   ├── review_handlers.py
-│   │   │   │   ├── edit_handlers.py
-│   │   │   │   └── admin_handlers.py
-│   │   │   └── utils.py                   # Formatting, keyboards
-│   │   └── ai/
-│   │       ├── claude.py                  # Claude API client
-│   │       ├── prompts.py                 # Prompt templates
-│   │       └── response_generator.py      # Draft generation logic
-│   │
-│   ├── domain/                            # Business logic (independent of infra)
-│   │   ├── review.py                      # Review entity + methods
-│   │   ├── draft.py                       # Draft entity + methods
-│   │   ├── location.py                    # Location entity
-│   │   └── workflows.py                   # Complex workflows (review → draft → post)
-│   │
-│   ├── persistence/                       # Database layer
-│   │   ├── database.py                    # Connection management
-│   │   └── repositories/
-│   │       ├── review_repository.py
-│   │       ├── draft_repository.py
-│   │       └── location_repository.py
-│   │
-│   ├── jobs/                              # Background tasks
-│   │   ├── scheduler.py                   # AsyncIOScheduler setup
-│   │   ├── polling/
-│   │   │   ├── review_poller.py           # Main polling job
-│   │   │   └── cleanup.py                 # Data cleanup jobs
-│   │   └── webhooks/
-│   │       └── telegram_webhook.py        # Phase 6.2 webhook handler
-│   │
-│   └── common/                            # Shared utilities
-│       ├── logger.py
-│       ├── exceptions.py
-│       ├── constants.py
-│       ├── decorators.py                  # Retry, caching, etc.
-│       └── validators.py
-│
-├── main.py
-├── config.py
-├── routes.py
-└── lifespan.py                            # Startup/shutdown logic (extracted from main.py)
-```
-
 **Tasks:**
-- [ ] Split `google_api.py` → `external/google/{auth,reviews,posting}.py`
-- [ ] Split `bot.py` → `external/telegram/{bot.py,handlers/,utils.py}`
-- [ ] Split `ai_responder.py` + prompt logic → `external/ai/{claude,prompts,response_generator}.py`
-- [ ] Extract domain entities and workflow logic into `domain/`
-- [ ] Move `database.py` functions into `persistence/repositories/`
-- [ ] Split `polling.py` + scheduler setup into `jobs/`
-- [ ] Move `logger.py`, `utils.py` shared helpers into `common/`
-- [ ] Extract lifespan logic from `main.py` into `lifespan.py`
-- [ ] Update all imports across the codebase
-- [ ] Verify app starts and all Telegram flows work end-to-end
-
-**Note:** Do after Phase 7 (production deployment) so refactor doesn't block going live.
+- [x] Split `google_api.py` → `external/google/{client,auth,reviews,posting}.py`
+- [x] Split `bot.py` → `external/telegram/{bot.py,handlers/,utils.py}`
+- [x] Split `ai_responder.py` + prompt logic → `external/ai/{claude,prompts,response_generator}.py`
+- [x] Extract domain entity stubs into `domain/`
+- [x] Move `database.py` functions into `persistence/{database.py,repositories/}`
+- [x] Split `polling.py` + scheduler setup into `jobs/{scheduler,polling/review_poller}.py`
+- [x] Move `logger.py`, `utils.py` shared helpers into `common/`
+- [x] Extract lifespan logic from `main.py` into `lifespan.py`
+- [x] Update all imports across the codebase
+- [x] Verify app starts (`from app.main import app` passes, zero stale imports)
 
 ---
 

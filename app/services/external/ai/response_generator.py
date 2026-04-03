@@ -1,15 +1,9 @@
 """
-Utility functions for the Google Reviews application.
+Draft response generation — orchestrates AI with template fallback.
 """
 
 from app.config import ANTHROPIC_API_KEY
-from app.services.ai_responder import generate_ai_response
-
-
-def convert_rating_to_int(rating_str):
-    """Convert Google's string ratings (FIVE, FOUR, etc.) to integers."""
-    rating_map = {'FIVE': 5, 'FOUR': 4, 'THREE': 3, 'TWO': 2, 'ONE': 1}
-    return rating_map.get(rating_str, 0)
+from app.services.external.ai.claude import generate_ai_response
 
 
 def generate_draft_response(location_name, reviewer_name, star_rating, review_text):
@@ -17,9 +11,7 @@ def generate_draft_response(location_name, reviewer_name, star_rating, review_te
     Generate a draft response to a review.
 
     Uses Anthropic Claude AI if ANTHROPIC_API_KEY is set, falls back to templates.
-    Phase 4 integrates Anthropic API. Template fallback ensures graceful degradation.
     """
-    # Try AI-generated response first (Phase 4)
     if ANTHROPIC_API_KEY:
         ai_response = generate_ai_response(location_name, reviewer_name, star_rating, review_text)
         if ai_response:

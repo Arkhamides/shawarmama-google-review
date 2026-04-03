@@ -7,7 +7,7 @@ Run with: python run.py
 
 import uvicorn
 from app.config import PORT
-from app.services.database import init_db
+from app.services.persistence.database import init_db
 
 
 if __name__ == '__main__':

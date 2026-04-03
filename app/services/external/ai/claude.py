@@ -1,29 +1,14 @@
 """
-Anthropic Claude AI responder for generating draft review responses.
-
-Generates empathetic, professional responses to reviews using the Anthropic API.
-Falls back gracefully if API key is not available.
+Anthropic Claude API client for generating draft review responses.
 """
 
 import anthropic
+
 from app.config import ANTHROPIC_API_KEY, ANTHROPIC_MODEL
-from app.logger import get_logger
+from app.services.external.ai.prompts import SYSTEM_PROMPT
+from app.services.common.logger import get_logger
 
 logger = get_logger(__name__)
-
-
-SYSTEM_PROMPT = """You are a professional restaurant manager for {location_name}, a shawarma restaurant in Paris.
-
-A customer has left a review. Your task is to draft a brief, professional, and empathetic response.
-
-Guidelines:
-- Acknowledge the customer's specific concern or feedback
-- Offer to resolve the issue if applicable, or thank them for positive feedback
-- Be warm and professional in tone
-- Keep the response to 2-4 sentences
-- Match the language of the original review (French or English)
-- Sign off with the restaurant name or "The team" — keep it simple
-- Avoid generic filler phrases; be genuine and specific when possible"""
 
 
 def generate_ai_response(location_name: str, reviewer_name: str, star_rating: int, review_text: str) -> str:
@@ -38,8 +23,6 @@ def generate_ai_response(location_name: str, reviewer_name: str, star_rating: in
 
     Returns:
         A draft response text (2-4 sentences), or None if API call fails
-
-    Falls back to a simple template response if ANTHROPIC_API_KEY is not set.
     """
     if not ANTHROPIC_API_KEY:
         return None

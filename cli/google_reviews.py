@@ -5,7 +5,7 @@ Google My Business Reviews CLI
 A command-line tool to fetch and display Google My Business reviews
 across all your restaurant locations.
 
-This script imports core API logic from app.services.google_api.
+This script imports core API logic from app.services.external.google.
 
 Usage:
     python -m cli.google_reviews              # Normal mode: show all reviews
@@ -14,7 +14,8 @@ Usage:
 
 import sys
 import json
-from app.services.google_api import authenticate, get_all_accounts, get_locations_for_account, get_reviews
+from app.services.external.google.auth import authenticate
+from app.services.external.google.reviews import get_all_accounts, get_locations_for_account, get_reviews
 
 
 def main():

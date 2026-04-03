@@ -1,24 +1,18 @@
 """
-Review polling loop for Google My Business reviews.
-
-Periodically checks for new reviews, detects bad reviews (≤3 stars),
-generates draft responses, and saves them for owner approval.
+Review polling loop — fetches new reviews from Google My Business
+and triggers the bad-review workflow (draft + notification).
 """
 
-from datetime import datetime
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-
-from app.config import BAD_REVIEW_THRESHOLD, POLL_INTERVAL_MINUTES
-from app.logger import get_logger
-from app.services.google_api import get_all_locations, get_reviews
-from app.services.database import has_seen_review, mark_seen, save_pending_reply
-from app.services.utils import convert_rating_to_int, generate_draft_response
-from app.services.bot import send_review_notification
+from app.config import BAD_REVIEW_THRESHOLD
+from app.services.common.logger import get_logger
+from app.services.common.validators import convert_rating_to_int
+from app.services.external.google.reviews import get_reviews
+from app.services.external.ai.response_generator import generate_draft_response
+from app.services.external.telegram.bot import send_review_notification
+from app.services.persistence.repositories.review_repository import has_seen_review, mark_seen
+from app.services.persistence.repositories.draft_repository import save_pending_reply
 
 logger = get_logger(__name__)
-
-# Global scheduler instance
-scheduler = None
 
 
 def polling_loop(creds, locations):
@@ -110,33 +104,3 @@ def polling_loop(creds, locations):
         logger.info("Found %d bad review(s) — owner notified via Telegram", bad_reviews_found)
     else:
         logger.info("No new bad reviews")
-
-
-def start_polling(creds, locations):
-    """Initialize and start the async polling scheduler."""
-    global scheduler
-
-    if scheduler is not None and scheduler.running:
-        logger.warning("Polling scheduler already running")
-        return
-
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(
-        polling_loop,
-        'interval',
-        minutes=POLL_INTERVAL_MINUTES,
-        args=[creds, locations],
-        id='review_polling'
-    )
-    scheduler.start()
-    logger.info("Polling scheduler started (every %d minutes)", POLL_INTERVAL_MINUTES)
-
-
-def stop_polling():
-    """Stop the background polling scheduler."""
-    global scheduler
-
-    if scheduler is not None and scheduler.running:
-        scheduler.shutdown()
-        scheduler = None
-        logger.info("Polling scheduler stopped")

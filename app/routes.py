@@ -7,13 +7,13 @@ from fastapi import APIRouter, Request, HTTPException, Depends, Header
 from pydantic import BaseModel, Field
 
 from app.config import API_SECRET
-from app.logger import get_logger
-from app.services.database import (
+from app.services.common.logger import get_logger
+from app.services.persistence.repositories.draft_repository import (
     get_all_pending_replies, get_stats, get_pending_reply,
     mark_posted, mark_rejected
 )
-from app.services.polling import polling_loop
-from app.services.google_api import post_reply
+from app.services.jobs.polling.review_poller import polling_loop
+from app.services.external.google.posting import post_reply
 
 router = APIRouter()
 logger = get_logger(__name__)
