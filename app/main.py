@@ -11,7 +11,6 @@ from fastapi import FastAPI
 import app.logger  # noqa: F401 — configures root logger before any other import
 from app.logger import get_logger
 from app.services.google_api import authenticate, get_all_locations
-from app.services.database import init_db
 from app.services.polling import start_polling, stop_polling
 from app.services.bot import start_bot, stop_bot
 from app.routes import router
@@ -35,9 +34,6 @@ async def lifespan(app: FastAPI):
         logger.info("Fetching locations")
         locations = get_all_locations(creds)
         logger.info("Locations loaded", extra={"count": len(locations)})
-
-        # Initialize database
-        init_db()
 
         # Store creds and locations in app state for route handlers
         app.state.creds = creds

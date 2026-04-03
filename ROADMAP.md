@@ -39,6 +39,8 @@ Cloud Run app (main.py)
 - **Phase 3** ✅ FastAPI routes for draft approval (HTTP API)
 - **Phase 4** ✅ Telegram bot with inline approval buttons (python-telegram-bot v21, AsyncIOScheduler, unified event loop)
 - **Phase 5** ✅ Claude AI response generation (`ai_responder.py`, falls back to templates)
+- **Phase 6.1** ✅ Draft editing workflow (ConversationHandler in `bot.py`, full edit → confirm → post flow)
+- **Good review notifications** ✅ Good reviews (>3★) send an informational Telegram message with no action buttons
 
 ---
 
@@ -46,16 +48,18 @@ Cloud Run app (main.py)
 
 ### Phase 6: Advanced features & webhook mode
 
-#### 6.1 Draft editing workflow (🔄 in progress)
+#### 6.1 Draft editing workflow (✅ complete)
 **Goal:** Let the owner edit AI-generated drafts before posting.
 
 **Tasks:**
-- Add `[✏️ Edit]` button to Telegram notification keyboard
-- Add `ConversationHandler` in `bot.py`:
+- [x] Add `[✏️ Edit]` button to Telegram notification keyboard
+- [x] Add `ConversationHandler` in `bot.py`:
   1. Owner taps `[✏️ Edit]` → bot shows current draft, asks for revised text
   2. Owner sends new text → bot previews it with `[✅ Post]` / `[❌ Cancel]` buttons
   3. Confirm → post edited text to Google, mark as posted
   4. Cancel → return to pending state
+- [x] `/reviews` command shows pending drafts with `[🔧 Manage]` button
+- [x] `[🔧 Manage]` opens full review + draft with action buttons
 
 **Files:** `app/services/bot.py`
 

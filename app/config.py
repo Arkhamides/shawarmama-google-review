@@ -25,6 +25,9 @@ TELEGRAM_OWNER_CHAT_IDS = [
 ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
 ANTHROPIC_MODEL = os.getenv('ANTHROPIC_MODEL', 'claude-haiku-4-5-20251001')
 
+# Database
+DATABASE_URL = os.getenv('DATABASE_URL')
+
 # Application Settings
 BAD_REVIEW_THRESHOLD = int(os.getenv('BAD_REVIEW_THRESHOLD', '3'))
 POLL_INTERVAL_MINUTES = int(os.getenv('POLL_INTERVAL_MINUTES', '5'))
@@ -38,6 +41,7 @@ _missing = [
         ('TELEGRAM_BOT_TOKEN', TELEGRAM_BOT_TOKEN),
         ('TELEGRAM_OWNER_CHAT_ID', TELEGRAM_OWNER_CHAT_ID),
         ('GOOGLE_PROJECT_ID', GOOGLE_PROJECT_ID),
+        ('DATABASE_URL', DATABASE_URL),
     ] if not val
 ]
 if _missing:

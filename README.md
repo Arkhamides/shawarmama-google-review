@@ -1,227 +1,136 @@
 # Google My Business Reviews Manager
 
-A Python application for managing Google My Business reviews with **real-time polling**, **bad review detection**, **draft response generation**, and **Telegram notifications**. Fetches reviews across all restaurant locations, automatically detects bad reviews (≤3 stars), generates draft responses, sends instant Telegram notifications, and awaits owner approval. Future phases will add AI-powered response generation.
+Python application for Shawar'Mama (6 Paris locations) that polls Google My Business for bad reviews (≤3 stars), generates AI draft responses via Claude, and notifies the owner via Telegram for approval, editing, or rejection.
 
 ## Quick Start
 
 ```bash
-# 1. Install dependencies
+# 1. Create and activate virtual environment
+python3.13 -m venv venv
+source venv/bin/activate
+
+# 2. Install dependencies
 pip install -r requirements.txt
 
-# 2. Set up Google Cloud credentials (see SETUP.md)
+# 3. Set up Google Cloud credentials (see SETUP.md)
 
-# 3. Create .env file (see .env.example)
+# 4. Start PostgreSQL (Docker)
+docker run --name reviews-pg \
+  -e POSTGRES_PASSWORD=dev -e POSTGRES_DB=reviews \
+  -p 5432:5432 -d postgres:16
+
+# 5. Configure environment
 cp .env.example .env
+# Edit .env — add DATABASE_URL and all required vars
 
-# 4. Run the server
+# 6. Run
 python run.py
 ```
 
-**On first run**, the application will:
-- Authenticate with Google using your browser
-- Cache credentials locally for future runs
-- Fetch all verified business locations
-- Initialize SQLite database (`db/reviews.db`)
-- Start Telegram bot (long-polling mode)
-- Start background review polling loop (every 5 minutes by default)
-- Start FastAPI web server on port 8080
-
-The application runs continuously in the background:
-- 🔄 **Polls for new reviews** every 5 minutes (configurable)
-- 🚨 **Detects bad reviews** (≤3 stars, configurable)
-- 📝 **Generates draft responses** automatically
-- 📲 **Sends Telegram notifications** with inline [✅ Post] and [❌ Reject] buttons
-- 💾 **Saves drafts** to database and awaits owner approval
+On startup the app will:
+- Apply any pending database migrations (Alembic)
+- Authenticate with Google (browser prompt on first run, cached after)
+- Load all 6 verified business locations
+- Start the Telegram bot (long-polling mode)
+- Start the background polling loop (every 5 minutes by default)
+- Start the FastAPI server on port 8080
 
 ## How It Works
 
-### Review Polling Loop
-The application continuously monitors your Google My Business reviews:
-
-1. **Fetch Reviews** — Every 5 minutes, polls Google My Business API for new reviews
-2. **Detect Bad Reviews** — Identifies reviews with ≤3 stars as "bad"
-3. **Generate Draft** — Creates a templated response (Phase 5 will use AI)
-4. **Store for Approval** — Saves draft to SQLite database for owner review
-5. **Prevent Duplicates** — Marks reviews as seen to avoid reprocessing
-
-All pending drafts can be viewed and approved via the Flask web interface.
-
-### Architecture
 ```
-┌───────────────────────────────────────────────────────────┐
-│ Uvicorn ASGI Server (owns event loop)                     │
-│  └─ FastAPI Application                                   │
-│     ├─ HTTP Routes (port 8080)                            │
-│     │   • /health, /stats, /reviews                       │
-│     │   • /drafts/{id}/approve, /drafts/{id}/reject       │
-│     │                                                      │
-│     ├─ Telegram Bot (python-telegram-bot, long-polling)  │
-│     │   • /start, /help, /reviews, /stats commands       │
-│     │   • [✅ Post] [❌ Reject] inline buttons            │
-│     │                                                      │
-│     └─ AsyncIOScheduler (every 5 minutes)                 │
-│         └─ Polling Loop (sync, runs in thread pool)       │
-│            • Fetches reviews from Google My Business API  │
-│            • Detects bad reviews                          │
-│            • Generates drafts                             │
-│            • Sends Telegram notifications                 │
-│            • Saves to database                            │
-│                                                            │
-└───────────────────────────────────────────────────────────┘
-                         ▼
-        ┌────────────────────────────────┐
-        │ SQLite Database (reviews.db)    │
-        │  • seen_reviews                │
-        │  • pending_replies             │
-        │  • posted_replies              │
-        └────────────────────────────────┘
+Every N minutes (AsyncIOScheduler):
+  └── Fetch reviews from Google My Business API
+        For each unseen review:
+          ≤3★ → generate Claude AI draft
+                save to PostgreSQL
+                send Telegram notification → [✅ Post] [✏️ Edit] [❌ Reject]
+                mark as seen (only after successful delivery)
+          >3★ → send informational Telegram message, mark as seen
 ```
 
-## Using as a Python Module
-
-The core API can be imported by other applications:
-
-```python
-from app.services.google_api import authenticate, get_all_locations, get_reviews, post_reply
-from app.services.database import get_all_pending_replies, mark_approved
-
-# Authenticate with Google
-creds = authenticate()
-
-# Get all locations
-locations = get_all_locations(creds)
-
-# View pending review drafts
-pending = get_all_pending_replies(status='pending')
-for draft in pending:
-    print(f"Bad review from {draft['reviewer_name']}: {draft['star_rating']}★")
-    print(f"Draft: {draft['draft_reply']}")
-    
-    # Approve and post the reply
-    mark_approved(draft['review_id'])
-    post_reply(creds, draft['location_name'], draft['review_id'], draft['draft_reply'])
-```
-
-See [CLAUDE.md](CLAUDE.md) for detailed API documentation and architecture.
-
-
-
-## What the Application Does
-
-1. **Authenticates** with Google My Business using OAuth 2.0
-2. **Fetches** all verified business locations associated with your account
-3. **Polls continuously** for new reviews every N minutes
-4. **Detects bad reviews** (configurable threshold, default ≤3 stars)
-5. **Generates draft responses** to bad reviews automatically
-6. **Stores drafts** in SQLite database for owner approval
-7. **Provides web interface** for viewing and approving pending replies
-8. *(Phase 4+)* **Sends Telegram notifications** when bad reviews detected
-9. *(Phase 5+)* **Uses AI** (OpenAI) to generate intelligent responses
-
-## Requirements
-
-- Python 3.7+
-- Google account with a verified Google My Business location
-- Google Cloud project with My Business APIs enabled
-
-See [requirements.txt](requirements.txt) for Python package dependencies.
+**Owner actions via Telegram:**
+- `[✅ Post]` — posts the AI draft directly to Google My Business
+- `[✏️ Edit]` — prompts for revised text → preview → confirm before posting
+- `[❌ Reject]` — discards the draft
+- `/reviews` — lists all pending drafts with a `[🔧 Manage]` button for each
 
 ## Configuration
 
-All settings are in `.env` file (see `.env.example`):
+All settings go in `.env`:
 
-```bash
-# Google Cloud
-GOOGLE_TOKEN_PATH=token.pickle          # Where to cache OAuth token
-GOOGLE_PROJECT_ID=your-gcp-project-id
+| Variable | Required | Default | Notes |
+|----------|----------|---------|-------|
+| `DATABASE_URL` | Yes | — | PostgreSQL connection string |
+| `TELEGRAM_BOT_TOKEN` | Yes | — | Bot API token |
+| `TELEGRAM_OWNER_CHAT_ID` | Yes | — | Owner's chat ID (comma-separated for multiple) |
+| `GOOGLE_PROJECT_ID` | Yes | — | GCP project ID |
+| `ANTHROPIC_API_KEY` | No | — | Falls back to template responses if unset |
+| `ANTHROPIC_MODEL` | No | `claude-haiku-4-5-20251001` | Claude model for draft generation |
+| `GOOGLE_TOKEN_PATH` | No | `token.pickle` | Cached OAuth token path |
+| `BAD_REVIEW_THRESHOLD` | No | `3` | Reviews ≤ this trigger notifications |
+| `POLL_INTERVAL_MINUTES` | No | `5` | Polling frequency |
+| `PORT` | No | `8080` | Web server port |
+| `DRY_RUN` | No | `false` | Set `true` to skip posting to Google |
+| `LOG_LEVEL` | No | `INFO` | `DEBUG` for verbose output |
 
-# Application settings
-BAD_REVIEW_THRESHOLD=3                  # Reviews ≤3 stars are "bad"
-POLL_INTERVAL_MINUTES=5                 # Check for new reviews every N minutes
-FLASK_PORT=8080                         # Web server port
+## HTTP API
 
-# Telegram (Phase 4+, optional)
-TELEGRAM_BOT_TOKEN=                     # Telegram bot API token
-TELEGRAM_OWNER_CHAT_ID=                 # Your chat ID for notifications
-
-# OpenAI (Phase 5+, optional)
-OPENAI_API_KEY=                         # OpenAI API key for AI responses
-```
-
-## Troubleshooting
-
-**"No locations found"**
-- Verify your business is [verified on Google My Business](https://business.google.com)
-- Use the same Google account for both the business and the OAuth credentials
-
-**"credentials.json not found"**
-- Download OAuth credentials from Google Cloud Console and save as `credentials.json`
-- See [SETUP.md](SETUP.md) for detailed instructions
-
-**Polling not starting / "database locked" errors**
-- Check that `db/` directory is writable
-- Ensure SQLite isn't being accessed by multiple processes
-- Check Flask logs for detailed error messages
-
-**API errors (403, 404)**
-- Check that the required APIs are enabled in your Google Cloud project
-- See [SETUP.md](SETUP.md) troubleshooting section
-- Make sure your Google My Business account is VERIFIED
-
-**Web server not accessible**
-- Check `FLASK_PORT` in `.env` (default 8080)
-- Verify firewall allows port 8080
-- Check Flask logs for startup errors
-
-## Development Roadmap
-
-See [ROADMAP.md](ROADMAP.md) for the full development plan:
-
-- **Phase 1** ✅ — Core API refactored into reusable module
-- **Phase 2** ✅ — Review polling loop + database persistence
-- **Phase 3** ✅ — FastAPI web interface for viewing/approving pending drafts
-- **Phase 4** ✅ — Telegram bot notifications + inline approval workflow (python-telegram-bot v21.10)
-- **Phase 5** (Next) — OpenAI integration for intelligent response generation
-- **Phase 6** — Advanced features (analytics, scheduling, multi-language)
-- **Phase 7** — Production deployment (Cloud Run, monitoring, scaling)
-
-**Architecture decision:** Using simple polling instead of Pub/Sub webhooks for simplicity and faster deployment. See [NOTIFICATION_STRATEGIES.md](NOTIFICATION_STRATEGIES.md) for detailed comparison.
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/health` | Health check (authenticated, locations loaded) |
+| GET | `/stats` | DB counts (seen, pending, posted) |
+| GET | `/reviews` | All pending drafts |
+| POST | `/poll` | Manually trigger a poll cycle |
+| POST | `/drafts/{id}/approve` | Approve draft → post to Google |
+| POST | `/drafts/{id}/reject` | Reject draft |
 
 ## File Structure
 
 ```
-.
-├── app/                         # FastAPI application
-│   ├── main.py                 # FastAPI app + lifespan context manager
-│   ├── config.py               # Environment configuration
-│   ├── routes.py               # APIRouter endpoints
-│   └── services/               # Core business logic
-│       ├── google_api.py        # Google My Business API wrapper
-│       ├── polling.py           # Background polling loop (AsyncIOScheduler)
-│       ├── bot.py              # Telegram bot integration (python-telegram-bot)
-│       ├── database.py          # SQLite database layer
-│       └── utils.py             # Helper functions
-├── db/                          # SQLite database directory
-│   └── reviews.db              # (auto-created) Reviews database
-├── run.py                       # Application entry point
-├── .env.example                # Environment variables template
-├── ROADMAP.md                  # Development plan (7 phases)
-├── CLAUDE.md                   # Architecture documentation
-├── SETUP.md                    # Setup instructions
-├── NOTIFICATION_STRATEGIES.md  # Polling vs webhooks comparison
-├── CHANGELOG.md                # Version history
-├── README.md                   # This file
-├── requirements.txt            # Python dependencies
-├── credentials.json            # (created by you) OAuth credentials
-├── token.pickle                # (auto-generated) Cached auth token
-└── venv/                       # Virtual environment
+app/
+├── main.py              # FastAPI app + lifespan (startup/shutdown)
+├── config.py            # All env vars — single source of truth
+├── routes.py            # HTTP API endpoints
+├── logger.py            # JSON-formatted logging
+└── services/
+    ├── google_api.py    # Google My Business API (auth, locations, reviews, post reply)
+    ├── polling.py       # Background polling loop (AsyncIOScheduler)
+    ├── bot.py           # Telegram bot (commands, inline buttons, edit ConversationHandler)
+    ├── database.py      # PostgreSQL layer via psycopg2
+    ├── ai_responder.py  # Claude AI draft generation
+    └── utils.py         # Rating conversion + draft orchestration
+
+db/
+├── models.py            # SQLAlchemy Core table definitions (Alembic source)
+└── migrations/          # Alembic migration history
+
+cli/
+└── google_reviews.py    # CLI tool for manual review fetching
+
+alembic.ini              # Alembic config
+run.py                   # Entry point: migrations → uvicorn
 ```
 
 ## Development Notes
 
-- **Re-authenticate:** Delete `token.pickle` and run `python run.py` again to use a different Google account
-- **Reset database:** Delete `db/reviews.db` to clear all history and pending approvals
-- **Modify polling interval:** Change `POLL_INTERVAL_MINUTES` in `.env` (requires restart)
-- **Change bad review threshold:** Modify `BAD_REVIEW_THRESHOLD` in `.env` (default 3 = ≤3 stars)
+- **Re-authenticate:** Delete `token.pickle` and restart to use a different Google account
+- **Reset database:** `docker exec reviews-pg psql -U postgres -d reviews -c "TRUNCATE seen_reviews, pending_replies, posted_replies;"`
+- **Inspect DB:** `docker exec reviews-pg psql -U postgres -d reviews -c "\dt"`
+- **Schema changes:** Edit `db/models.py`, then run `alembic revision --autogenerate -m "description"` — see [DATABASE.md](DATABASE.md)
 
-See [CLAUDE.md](CLAUDE.md) for detailed API documentation and architecture notes.
+## Troubleshooting
+
+| Problem | Solution |
+|---------|----------|
+| `Missing required environment variables` | Check `.env` has all required vars — `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_OWNER_CHAT_ID`, `GOOGLE_PROJECT_ID` |
+| `No locations found` | Verify business at [business.google.com](https://business.google.com) — `verificationState` must be `VERIFIED` |
+| `credentials.json not found` | Download OAuth credentials (Desktop Application type) from Google Cloud Console — see [SETUP.md](SETUP.md) |
+| `403` from Google API | Enable the required APIs in Google Cloud Console and wait a few minutes |
+| DB connection error | Ensure PostgreSQL is running: `docker start reviews-pg` |
+
+## Further Reading
+
+- [ARCHITECTURE.md](ARCHITECTURE.md) — event loop model, review lifecycle, full component breakdown
+- [DATABASE.md](DATABASE.md) — schema, migration workflow, Cloud SQL setup
+- [ROADMAP.md](ROADMAP.md) — completed phases and what's next
+- [SETUP.md](SETUP.md) — Google OAuth credential setup

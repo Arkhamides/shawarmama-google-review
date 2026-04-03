@@ -138,9 +138,6 @@ def start_polling(creds, locations):
     scheduler.start()
     logger.info("Polling scheduler started (every %d minutes)", POLL_INTERVAL_MINUTES)
 
-    # Run once immediately
-    polling_loop(creds, locations)
-
 
 def stop_polling():
     """Stop the background polling scheduler."""
