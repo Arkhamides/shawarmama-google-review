@@ -13,7 +13,7 @@ from app.logger import get_logger
 from app.services.google_api import get_all_locations, get_reviews
 from app.services.database import has_seen_review, mark_seen, save_pending_reply
 from app.services.utils import convert_rating_to_int, generate_draft_response
-from app.services.bot import send_review_notification, send_good_review_notification
+from app.services.bot import send_review_notification
 
 logger = get_logger(__name__)
 
@@ -94,18 +94,11 @@ def polling_loop(creds, locations):
 
                 else:
                     logger.info(
-                        "Good review: %s (%d★) at %s",
+                        "Good review: %s (%d★) at %s — skipped",
                         reviewer_name, star_rating, location_title,
                     )
-                    # Good-review notification is informational; mark seen regardless
                     mark_seen(review_id, location_name, location_title,
                               reviewer_name, star_rating, review_text)
-                    send_good_review_notification(
-                        location_title=location_title,
-                        reviewer_name=reviewer_name,
-                        star_rating=star_rating,
-                        review_text=review_text,
-                    )
 
             except Exception as e:
                 logger.error(

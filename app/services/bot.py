@@ -140,35 +140,6 @@ async def stop_bot():
     logger.info("Telegram bot stopped")
 
 
-def send_good_review_notification(location_title: str, reviewer_name: str,
-                                  star_rating: int, review_text: str):
-    """
-    Send a simple notification about a new good review (>3 stars).
-
-    No action buttons — just informational.
-    """
-    if _app is None or _main_loop is None:
-        return
-
-    coro = _send_good_notification_async(location_title, reviewer_name, star_rating, review_text)
-    asyncio.run_coroutine_threadsafe(coro, _main_loop)
-
-
-async def _send_good_notification_async(location_title: str, reviewer_name: str,
-                                        star_rating: int, review_text: str):
-    """Async version of sending a good review notification."""
-    try:
-        stars = "⭐" * star_rating
-        message = (
-            f"{stars} NEW REVIEW — {location_title} ({star_rating}★)\n"
-            f"From: {reviewer_name}\n\n"
-            f'"{review_text}"'
-        )
-        for chat_id in TELEGRAM_OWNER_CHAT_IDS:
-            await _app.bot.send_message(chat_id=chat_id, text=message)
-    except Exception as e:
-        logger.warning("Failed to send good review notification: %s", e)
-
 
 def send_review_notification(review_id: str, location_title: str, reviewer_name: str,
                             star_rating: int, review_text: str, draft_reply: str) -> Optional[Future]:
