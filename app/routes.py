@@ -6,7 +6,7 @@ from datetime import datetime
 from fastapi import APIRouter, Request, HTTPException, Depends, Header
 from pydantic import BaseModel, Field
 
-from app.config import API_SECRET
+from app.config import API_SECRET, WEBHOOK_URL
 from app.services.common.logger import get_logger
 from app.services.persistence.repositories.draft_repository import (
     get_all_pending_replies, get_stats, get_pending_reply,
@@ -65,12 +65,18 @@ async def get_all_reviews_endpoint():
 
 
 @router.post("/telegram")
-async def telegram_webhook():
+async def telegram_webhook(request: Request):
     """
     Telegram webhook endpoint.
-    Currently unused (polling mode is active).
+    Active when WEBHOOK_URL is set; returns early in polling mode.
     """
-    return {"status": "ok", "message": "Telegram webhook (polling mode active)"}
+    if not WEBHOOK_URL:
+        return {"status": "ok", "message": "polling mode active"}
+
+    from app.services.external.telegram.bot import process_webhook_update
+    data = await request.json()
+    await process_webhook_update(data)
+    return {"ok": True}
 
 
 @router.post("/poll")

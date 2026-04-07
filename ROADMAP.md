@@ -64,13 +64,14 @@ Cloud Run app (main.py)
 
 **Files:** `app/services/bot.py`
 
-#### 6.2 Webhook mode for Cloud Run
+#### 6.2 Webhook mode for Cloud Run (✅ complete)
 **Goal:** Switch from long-polling to webhook mode for serverless deployment.
 
 **Tasks:**
-- Activate `POST /telegram` webhook endpoint in `routes.py`
-- Register webhook URL with Telegram API on startup
-- Remove long-polling from `start_bot()`
+- [x] Activate `POST /telegram` webhook endpoint in `routes.py`
+- [x] Register webhook URL with Telegram API on startup (`set_webhook` when `WEBHOOK_URL` is set)
+- [x] Fall back to long-polling when `WEBHOOK_URL` is unset (local dev unchanged)
+- [x] Delete webhook on shutdown
 
 #### 6.3 Per-location analytics
 **Goal:** Extend `/stats` with per-location breakdown and response time metrics.

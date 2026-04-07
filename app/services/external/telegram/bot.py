@@ -15,7 +15,9 @@ from telegram.ext import (
     ConversationHandler, MessageHandler, filters,
 )
 
-from app.config import TELEGRAM_BOT_TOKEN, TELEGRAM_OWNER_CHAT_IDS
+from telegram import Update
+
+from app.config import TELEGRAM_BOT_TOKEN, TELEGRAM_OWNER_CHAT_IDS, WEBHOOK_URL
 from app.services.common.logger import get_logger
 from app.services.external.telegram.handlers.admin_handlers import (
     cmd_start, cmd_help, cmd_reviews, cmd_stats,
@@ -88,12 +90,18 @@ async def start_bot(creds):
     _app.add_handler(CallbackQueryHandler(handle_callback))
 
     await _app.initialize()
-    await _app.updater.start_polling(drop_pending_updates=True)
-    await _app.start()
+
+    if WEBHOOK_URL:
+        webhook_endpoint = f"{WEBHOOK_URL.rstrip('/')}/telegram"
+        await _app.bot.set_webhook(url=webhook_endpoint, drop_pending_updates=True)
+        await _app.start()
+        logger.info("Telegram bot started (webhook mode: %s)", webhook_endpoint)
+    else:
+        await _app.updater.start_polling(drop_pending_updates=True)
+        await _app.start()
+        logger.info("Telegram bot started (polling mode)")
 
     _main_loop = asyncio.get_event_loop()
-
-    logger.info("Telegram bot started (polling mode)")
 
 
 async def stop_bot():
@@ -108,7 +116,10 @@ async def stop_bot():
         return
 
     logger.info("Stopping Telegram bot")
-    await _app.updater.stop()
+    if WEBHOOK_URL:
+        await _app.bot.delete_webhook()
+    else:
+        await _app.updater.stop()
     await _app.stop()
     await _app.shutdown()
     logger.info("Telegram bot stopped")
@@ -171,3 +182,18 @@ async def _send_notification_async(review_id: str, location_title: str, reviewer
 
     for chat_id in TELEGRAM_OWNER_CHAT_IDS:
         await _app.bot.send_message(chat_id=chat_id, text=message, reply_markup=keyboard)
+
+
+async def process_webhook_update(data: dict):
+    """
+    Process an incoming Telegram update received via webhook.
+
+    Called from POST /telegram in routes.py. Deserializes the raw JSON
+    payload into an Update object and dispatches it through the bot's
+    handler pipeline.
+    """
+    if _app is None:
+        logger.warning("Bot not initialised — dropping webhook update")
+        return
+    update = Update.de_json(data, _app.bot)
+    await _app.process_update(update)

@@ -37,6 +37,7 @@ POLL_INTERVAL_MINUTES = int(os.getenv('POLL_INTERVAL_MINUTES', '5'))
 PORT = int(os.getenv('PORT', '8080'))
 DRY_RUN = os.getenv('DRY_RUN', 'false').lower() == 'true'
 LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
+WEBHOOK_URL = os.getenv('WEBHOOK_URL')  # If set, enables Telegram webhook mode (e.g. https://your-cloud-run-url)
 
 # Startup validation — fail fast on missing required vars
 _missing = [
